@@ -1,0 +1,34 @@
+name: Run Tests
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/ucsd-cse123-fa23/pa2a-testing:latest
+      options: --privileged
+      credentials:
+        username: ${{github.repository_owner}}
+        password: ${{secrets.GITHUB_TOKEN}}
+      volumes:
+        - /lib/modules:/lib/modules
+    steps:
+      - name: start services
+        run: |
+          service openvswitch-switch start && 
+          ovs-vsctl set-manager ptcp:6640 &&
+          pip3 install unittest-xml-reporting
+      - name: checkout repo
+        uses: actions/checkout@v3
+        with:
+          persist-credentials: false
+      - name: run tests
+        run: "[ -f /run.sh ] && (/run.sh || exit $?) || (cd tests && python3 -m xmlrunner)"
+      - name: report tests
+        uses: test-summary/action@v2
+        with:
+          paths: "tests/TEST-*.xml"
+        if: always()
