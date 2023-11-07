@@ -2,11 +2,11 @@
 
 ## Info
 
-Name: John Doe
+Name: Bryce Pollack
 
-PID: A00000000
+PID: A16657276
 
-Email: jdoe@ucsd.edu
+Email: bpollack@ucsd.edu
 
 ## Description and Overview
 Describe in brief what files you changed and what they should do.
