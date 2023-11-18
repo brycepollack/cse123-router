@@ -16,8 +16,47 @@
   checking whether we should resend an request or destroy the arp request.
   See the comments in the header file for an idea of what it should look like.
 */
-void sr_arpcache_sweepreqs(struct sr_instance *sr) { 
-    /* Fill this in */
+void sr_arpcache_sweepreqs(struct sr_instance *sr) {
+    struct sr_arpcache *cache = &(sr->cache);
+
+    pthread_mutex_lock(&(cache->lock));
+
+    struct sr_arpreq *req;
+    for (req = cache->requests; req != NULL; req = req->next) {
+        sr_handlearpreq(sr, cache, req);
+    }
+    
+    pthread_mutex_unlock(&(cache->lock));
+
+}
+
+void sr_handlearpreq(struct sr_instance *sr, struct sr_arpcache *cache, struct sr_arpreq *req) {
+    time_t currtime = time(NULL);
+
+    if(difftime(currtime, req->sent) >= 1.0){
+        if(req->times_sent >= 5){
+            /*
+            send icmp host unreachable to source addr of all pkts waiting on this request
+            arpreq_destroy(req)
+            */
+           struct sr_packet *packet_walker = req->packets;
+           while(packet_walker){
+            sr_sendicmppacket(sr, packet_walker->buf, packet_walker->len, packet_walker->iface, 3, 1);
+            packet_walker = packet_walker->next;
+           }
+           sr_arpreq_destroy(cache, req);
+        }
+        else{
+            /*
+            send arp request
+            req->sent = now
+            req->times_sent++
+            */
+           sr_sendarppacket(sr, NULL, 0, sr_get_interface(sr, req->packets->iface)->name, 1, req->ip);
+           req->sent = currtime;
+           req->times_sent++;
+        }
+    }
 }
 
 /* You should not need to touch the rest of this code. */
