@@ -115,6 +115,58 @@ void sr_handlepacket(struct sr_instance* sr,
 
 }
 
+void sr_handlearppacket(struct sr_instance* sr,
+        uint8_t * packet/* lent */,
+        unsigned int len,
+        char* interface/* lent */)
+{
+  sr_arp_hdr_t *arphdr = (sr_arp_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
+
+  /*Sanity-check the packet (i.e., it meets minimum length)*/
+  int minlength = sizeof(sr_ethernet_hdr_t) + sizeof(sr_arp_hdr_t);
+  if (len < minlength){
+    fprintf(stderr, "Failed to print ARP header, insufficient length\n");
+    return;
+  }
+
+  if(ntohs(arphdr->ar_op) == arp_op_request){ /*Request*/
+    fprintf(stderr, "Incoming packet ARP req\n");
+    /*Send arp reply when target IP address is the IP address of the router’s interface that the ARP request was received on*/
+    if(arphdr->ar_tip == sr_get_interface(sr, interface)->ip){
+      sr_sendarppacket(sr, packet, len, interface, 2, arphdr->ar_sip);
+    }
+    
+  }
+  else if(ntohs(arphdr->ar_op) == arp_op_reply){ /*Reply*/
+    fprintf(stderr, "Incoming packet ARP reply\n");
+    /*Forward queued packets waiting on this reply*/
+    struct sr_arpreq *waiting_req = sr_arpcache_insert(&(sr->cache), arphdr->ar_sha, arphdr->ar_sip);
+    if(waiting_req == NULL){
+      fprintf(stderr, "Failed to process ARP reply\n");
+      return;
+    }
+
+    struct sr_packet *packet_walker = waiting_req->packets;
+    while(packet_walker){
+      uint8_t *new_packet = packet_walker->buf;
+      unsigned int new_len = packet_walker->len;
+      sr_ethernet_hdr_t *new_ethhdr = (sr_ethernet_hdr_t *)(new_packet);
+      memcpy(new_ethhdr->ether_dhost, arphdr->ar_sha, ETHER_ADDR_LEN);
+      memcpy(new_ethhdr->ether_shost, sr_get_interface(sr, packet_walker->iface)->addr, ETHER_ADDR_LEN);
+
+      fprintf(stderr, "Received arp reply, forwarding original packet to\n");
+      sr_ip_hdr_t *iphdr = (sr_ip_hdr_t *)(new_packet + sizeof(sr_ethernet_hdr_t));
+      print_addr_ip_int(ntohl(iphdr->ip_dst));
+      sr_send_packet(sr, new_packet, new_len, packet_walker->iface);
+
+      packet_walker = packet_walker->next;
+    }
+    sr_arpreq_destroy(&(sr->cache), waiting_req);
+
+  }
+
+}
+
 void sr_handleippacket(struct sr_instance* sr,
         uint8_t * packet/* lent */,
         unsigned int len,
@@ -239,55 +291,68 @@ void sr_handleicmppacket(struct sr_instance* sr,
 
 }
 
-void sr_handlearppacket(struct sr_instance* sr,
+void sr_sendarppacket(struct sr_instance* sr,
         uint8_t * packet/* lent */,
         unsigned int len,
-        char* interface/* lent */)
+        char* interface/* lent */,
+        uint8_t arp_op,
+        uint32_t target_ip)
 {
-  sr_arp_hdr_t *arphdr = (sr_arp_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
 
-  /*Sanity-check the packet (i.e., it meets minimum length)*/
-  int minlength = sizeof(sr_ethernet_hdr_t) + sizeof(sr_arp_hdr_t);
-  if (len < minlength){
-    fprintf(stderr, "Failed to print ARP header, insufficient length\n");
-    return;
-  }
+  /*Send request when forwarding a packet*/
+  /*Send reply when target IP address is the IP address of the router’s interface that the ARP request was received on*/
 
-  if(ntohs(arphdr->ar_op) == arp_op_request){ /*Request*/
-    fprintf(stderr, "Incoming packet ARP req\n");
-    /*Send arp reply when target IP address is the IP address of the router’s interface that the ARP request was received on*/
-    if(arphdr->ar_tip == sr_get_interface(sr, interface)->ip){
-      sr_sendarppacket(sr, packet, len, interface, 2, arphdr->ar_sip);
+  if(arp_op == 1){ /*Handle send arp request*/
+    /*Create new packet*/
+    unsigned int new_len = sizeof(sr_ethernet_hdr_t) + sizeof(sr_arp_hdr_t);
+    uint8_t *new_packet = (uint8_t *)malloc(new_len);
+
+    /*Ethernet Header*/
+    sr_ethernet_hdr_t *new_ethhdr = (sr_ethernet_hdr_t *)(new_packet);
+    int i;
+    for(i = 0; i < ETHER_ADDR_LEN; i++){
+      new_ethhdr->ether_dhost[i] = 0xFF;
     }
+    memcpy(new_ethhdr->ether_shost, sr_get_interface(sr, interface)->addr, ETHER_ADDR_LEN);
+    new_ethhdr->ether_type = htons(ethertype_arp);
+    /*ARP Header*/
+    sr_arp_hdr_t *new_arphdr = (sr_arp_hdr_t *)(new_packet + sizeof(sr_ethernet_hdr_t));
+    new_arphdr->ar_hrd = htons(arp_hrd_ethernet);
+    new_arphdr->ar_pro = htons(ethertype_ip);             
+    new_arphdr->ar_hln = ETHER_ADDR_LEN;             
+    new_arphdr->ar_pln = 4; /*uint32_t*/            
+    new_arphdr->ar_op = htons(arp_op_request);
+    memcpy(new_arphdr->ar_sha, sr_get_interface(sr, interface)->addr, ETHER_ADDR_LEN);
+    new_arphdr->ar_sip = sr_get_interface(sr, interface)->ip;
+    for(i = 0; i < ETHER_ADDR_LEN; i++){
+      new_arphdr->ar_tha[i] = 0x00;
+    }
+    new_arphdr->ar_tip = target_ip;
+    fprintf(stderr, "Sending ARP req to\n");
+    print_addr_ip_int(ntohl(new_arphdr->ar_tip));
+
+    sr_send_packet(sr, new_packet, new_len, interface);
+    free(new_packet);
+  }
+  else if(arp_op == 2){ /*Handle send arp reply*/
+    /*Ethernet header*/
+    sr_ethernet_hdr_t *ethhdr = (sr_ethernet_hdr_t *)(packet);
+    memcpy(ethhdr->ether_dhost, ethhdr->ether_shost, ETHER_ADDR_LEN);
+    memcpy(ethhdr->ether_shost, sr_get_interface(sr, interface)->addr, ETHER_ADDR_LEN);
+    ethhdr->ether_type = htons(ethertype_arp);
+    /*ARP Header*/
+    sr_arp_hdr_t *arphdr = (sr_arp_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));           
+    arphdr->ar_op = htons(arp_op_reply);
+    memcpy(arphdr->ar_sha, sr_get_interface(sr, interface)->addr, ETHER_ADDR_LEN);
+    arphdr->ar_sip = sr_get_interface(sr, interface)->ip;
+    memcpy(arphdr->ar_tha, ethhdr->ether_shost, ETHER_ADDR_LEN);
+    arphdr->ar_tip = target_ip;
     
+    fprintf(stderr, "Sending ARP reply to\n");
+    print_addr_ip_int(ntohl(arphdr->ar_tip));
+    sr_send_packet(sr, packet, len, interface);
   }
-  else if(ntohs(arphdr->ar_op) == arp_op_reply){ /*Reply*/
-    fprintf(stderr, "Incoming packet ARP reply\n");
-    /*Forward queued packets waiting on this reply*/
-    struct sr_arpreq *waiting_req = sr_arpcache_insert(&(sr->cache), arphdr->ar_sha, arphdr->ar_sip);
-    if(waiting_req == NULL){
-      fprintf(stderr, "Failed to process ARP reply\n");
-      return;
-    }
-
-    struct sr_packet *packet_walker = waiting_req->packets;
-    while(packet_walker){
-      uint8_t *new_packet = packet_walker->buf;
-      unsigned int new_len = packet_walker->len;
-      sr_ethernet_hdr_t *new_ethhdr = (sr_ethernet_hdr_t *)(new_packet);
-      memcpy(new_ethhdr->ether_dhost, arphdr->ar_sha, ETHER_ADDR_LEN);
-      memcpy(new_ethhdr->ether_shost, sr_get_interface(sr, packet_walker->iface)->addr, ETHER_ADDR_LEN);
-
-      fprintf(stderr, "Received arp reply, forwarding original packet to\n");
-      sr_ip_hdr_t *iphdr = (sr_ip_hdr_t *)(new_packet + sizeof(sr_ethernet_hdr_t));
-      print_addr_ip_int(ntohl(iphdr->ip_dst));
-      sr_send_packet(sr, new_packet, new_len, packet_walker->iface);
-
-      packet_walker = packet_walker->next;
-    }
-    sr_arpreq_destroy(&(sr->cache), waiting_req);
-
-  }
+  
 
 }
 
@@ -379,71 +444,6 @@ void sr_sendicmppacket(struct sr_instance* sr,
     sr_send_packet(sr, new_packet, new_len, interface);
     free(new_packet);
   }
-
-}
-
-void sr_sendarppacket(struct sr_instance* sr,
-        uint8_t * packet/* lent */,
-        unsigned int len,
-        char* interface/* lent */,
-        uint8_t arp_op,
-        uint32_t target_ip)
-{
-
-  /*Send request when forwarding a packet*/
-  /*Send reply when target IP address is the IP address of the router’s interface that the ARP request was received on*/
-
-  if(arp_op == 1){ /*Handle send arp request*/
-    /*Create new packet*/
-    unsigned int new_len = sizeof(sr_ethernet_hdr_t) + sizeof(sr_arp_hdr_t);
-    uint8_t *new_packet = (uint8_t *)malloc(new_len);
-
-    /*Ethernet Header*/
-    sr_ethernet_hdr_t *new_ethhdr = (sr_ethernet_hdr_t *)(new_packet);
-    int i;
-    for(i = 0; i < ETHER_ADDR_LEN; i++){
-      new_ethhdr->ether_dhost[i] = 0xFF;
-    }
-    memcpy(new_ethhdr->ether_shost, sr_get_interface(sr, interface)->addr, ETHER_ADDR_LEN);
-    new_ethhdr->ether_type = htons(ethertype_arp);
-    /*ARP Header*/
-    sr_arp_hdr_t *new_arphdr = (sr_arp_hdr_t *)(new_packet + sizeof(sr_ethernet_hdr_t));
-    new_arphdr->ar_hrd = htons(arp_hrd_ethernet);
-    new_arphdr->ar_pro = htons(ethertype_ip);             
-    new_arphdr->ar_hln = ETHER_ADDR_LEN;             
-    new_arphdr->ar_pln = 4; /*uint32_t*/            
-    new_arphdr->ar_op = htons(arp_op_request);
-    memcpy(new_arphdr->ar_sha, sr_get_interface(sr, interface)->addr, ETHER_ADDR_LEN);
-    new_arphdr->ar_sip = sr_get_interface(sr, interface)->ip;
-    new_arphdr->ar_tip = target_ip;
-    for(i = 0; i < ETHER_ADDR_LEN; i++){
-      new_arphdr->ar_tha[i] = 0x00;
-    }
-    fprintf(stderr, "Sending ARP req to\n");
-    print_addr_ip_int(ntohl(new_arphdr->ar_tip));
-
-    sr_send_packet(sr, new_packet, new_len, interface);
-    free(new_packet);
-  }
-  else if(arp_op == 2){ /*Handle send arp reply*/
-    /*Ethernet header*/
-    sr_ethernet_hdr_t *ethhdr = (sr_ethernet_hdr_t *)(packet);
-    memcpy(ethhdr->ether_dhost, ethhdr->ether_shost, ETHER_ADDR_LEN);
-    memcpy(ethhdr->ether_shost, sr_get_interface(sr, interface)->addr, ETHER_ADDR_LEN);
-    ethhdr->ether_type = htons(ethertype_arp);
-    /*ARP Header*/
-    sr_arp_hdr_t *arphdr = (sr_arp_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));           
-    arphdr->ar_op = htons(arp_op_reply);
-    memcpy(arphdr->ar_sha, sr_get_interface(sr, interface)->addr, ETHER_ADDR_LEN);
-    arphdr->ar_sip = sr_get_interface(sr, interface)->ip;
-    memcpy(arphdr->ar_tha, ethhdr->ether_shost, ETHER_ADDR_LEN);
-    arphdr->ar_tip = target_ip;
-    
-    fprintf(stderr, "Sending ARP reply to\n");
-    print_addr_ip_int(ntohl(arphdr->ar_tip));
-    sr_send_packet(sr, packet, len, interface);
-  }
-  
 
 }
 
