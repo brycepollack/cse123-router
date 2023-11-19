@@ -195,7 +195,7 @@ void sr_handleippacket(struct sr_instance* sr,
     }
   }
   else{ /*destined towards one of the router interfaces*/
-    fprintf(stderr, "sr_handleippacket: destined towards one of the router interfaces\n");
+    fprintf(stderr, "Incoming packet IP, destined towards one of the router interfaces\n");
     if(ip_protocol(packet + sizeof(sr_ethernet_hdr_t)) == ip_protocol_icmp) { /* ICMP */
       sr_handleicmppacket(sr, packet, len, interface);
     }
@@ -415,8 +415,6 @@ void sr_sendarppacket(struct sr_instance* sr,
     fprintf(stderr, "Sending ARP req to\n");
     print_addr_ip_int(ntohl(new_arphdr->ar_tip));
 
-    fprintf(stderr, "Full header:\n");
-    print_hdrs(new_packet, new_len);
     sr_send_packet(sr, new_packet, new_len, interface);
     free(new_packet);
   }
