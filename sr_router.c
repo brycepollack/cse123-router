@@ -88,18 +88,18 @@ void sr_handlepacket(struct sr_instance* sr,
   assert(packet);
   assert(interface);
 
-  /*printf("*** -> Received packet of length %d \n",len);*/
+  printf("*** -> Received packet of length %d \n",len);
 
   /* fill in code here */
 
   /* Figure out if a packet is ip, arp, handle accordingly*/
   uint16_t ethtype = ethertype(packet);
 
-  if (ethtype == ethertype_ip) { /* IP */
-    sr_handleippacket(sr, packet, len, interface);
-  }
-  else if (ethtype == ethertype_arp) { /* ARP */
+  if (ethtype == ethertype_arp) { /* ARP */
     sr_handlearppacket(sr, packet, len, interface);
+  }
+  else if (ethtype == ethertype_ip) { /* IP */
+    sr_handleippacket(sr, packet, len, interface);
   }
   else { /* ERROR */
     fprintf(stderr, "Unrecognized Ethernet Type: %d\n", ethtype);
@@ -117,11 +117,15 @@ void sr_handleippacket(struct sr_instance* sr,
   uint32_t dst_ip = iphdr->ip_dst;
 
   /*Sanity-check the packet (i.e., it meets minimum length and correct checksum). IP checksum is calculated over IP header*/
+  /*
+  Verify the IP header length - “ip_hl” (must be 20 bytes - refer to RFC791).
+  Verify IP packet length - “ip_len” (must be greater than the IP header length).
+  */
   int minlength = sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t);
-  uint16_t old_ipchecksum = iphdr->ip_sum;
+  uint16_t incoming_ipcksum = iphdr->ip_sum;
   iphdr->ip_sum = 0;
   iphdr->ip_sum = cksum(iphdr, sizeof(sr_ip_hdr_t));
-  if (len < minlength || iphdr->ip_sum != old_ipchecksum) {
+  if (len < minlength || iphdr->ip_sum != incoming_ipcksum || iphdr->ip_hl != 5 || iphdr->ip_hl > ntohs(iphdr->ip_len)) {
     fprintf(stderr, "Failed to handle IP, insufficient length or invalid checksum\n");
     return;
   }
@@ -154,14 +158,13 @@ void sr_handleippacket(struct sr_instance* sr,
   */
 
   if(dst_if == NULL){ /*NOT destined towards one of the router interfaces*/
-    printf("sr_handleippacket: NOT destined towards one of the router interfaces\n");
+    fprintf(stderr, "sr_handleippacket: NOT destined towards one of the router interfaces\n");
     /*Decrement the TTL by 1, and recompute the packet checksum over the modified header*/
     iphdr->ip_ttl -= 1;
     /*Refuse any TTL <= 0*/
     if(iphdr->ip_ttl <= 0){
       fprintf(stderr, "Failed to handle IP packet, TTL expired\n");
       /*Send icmp type 11 code 0*/
-      printf("Failed to handle IP packet, TTL expired\n");
       sr_sendicmppacket(sr, packet, len, interface, 11, 0);
       return;
     }
@@ -172,7 +175,7 @@ void sr_handleippacket(struct sr_instance* sr,
     struct sr_rt* rt_walker = sr->routing_table;
     struct sr_rt* dst_rt_entry = NULL;
     while(rt_walker) {
-      if(ntohl(rt_walker->dest.s_addr) == ntohl(dst_ip)){
+      if(rt_walker->dest.s_addr == dst_ip){
         dst_rt_entry = rt_walker;
         break;
       }
@@ -181,20 +184,19 @@ void sr_handleippacket(struct sr_instance* sr,
 
     if(dst_rt_entry != NULL){
       /*Send an ARP request for the next-hop IP*/
-      printf("Handling arpreq in router...\n");
+      fprintf(stderr, "Incoming packet IP, sending arp req to next hop router\n");
       struct sr_arpreq *arpreq = sr_arpcache_queuereq(&(sr->cache), dst_rt_entry->gw.s_addr, packet, len, dst_rt_entry->interface);
       sr_handlearpreq(sr, &(sr->cache), arpreq);
     }
     else{
       /*Send icmp type 3 code 0*/
-      printf("Sending icmp 3...\n");
+      fprintf(stderr, "Incoming packet IP, no matching next hop found\n");
       sr_sendicmppacket(sr, packet, len, interface, 3, 0);
     }
   }
   else{ /*destined towards one of the router interfaces*/
-    printf("sr_handleippacket: destined towards one of the router interfaces\n");
-    uint8_t ip_proto = iphdr->ip_p;
-    if (ip_proto == ip_protocol_icmp) { /* ICMP */
+    fprintf(stderr, "sr_handleippacket: destined towards one of the router interfaces\n");
+    if(ip_protocol(packet + sizeof(sr_ethernet_hdr_t)) == ip_protocol_icmp) { /* ICMP */
       sr_handleicmppacket(sr, packet, len, interface);
     }
 
@@ -214,14 +216,15 @@ void sr_handleicmppacket(struct sr_instance* sr,
 
     /*Sanity-check the packet (i.e., it meets minimum length and correct checksum). ICMP checksum is calculated over ICMP header*/
     int minlength = sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + 4; /*print_hdrs uses 4 for icmp min length, not sure why*/
-    uint16_t old_icmpchecksum = icmp08hdr->icmp_sum;
+    uint16_t incoming_icmpcksum = icmp08hdr->icmp_sum;
     icmp08hdr->icmp_sum = 0;
     icmp08hdr->icmp_sum = cksum(icmp08hdr, len - minlength + 4);
-    if (len < minlength || icmp08hdr->icmp_sum != old_icmpchecksum){
+    if (len < minlength || icmp08hdr->icmp_sum != incoming_icmpcksum){
       fprintf(stderr, "Failed to handle ICMP, insufficient length or invalid checksum\n");
       return;
     }
 
+    fprintf(stderr, "Incoming packet ICMP echo request, sending echo reply\n");
     /*Send icmp type 0 code 0*/
     sr_sendicmppacket(sr, packet, len, interface, 0, 0);
 
@@ -244,7 +247,7 @@ void sr_handlearppacket(struct sr_instance* sr,
   }
 
   if(ntohs(arphdr->ar_op) == arp_op_request){ /*Request*/
-    printf("sr_handlearppacket: handling arp request\n");
+    fprintf(stderr, "Incoming packet ARP req\n");
     /*Send arp reply when target IP address is the IP address of the router’s interface that the ARP request was received on*/
     if(arphdr->ar_tip == sr_get_interface(sr, interface)->ip){
       sr_sendarppacket(sr, packet, len, interface, 2, arphdr->ar_sip);
@@ -252,7 +255,7 @@ void sr_handlearppacket(struct sr_instance* sr,
     
   }
   else if(ntohs(arphdr->ar_op) == arp_op_reply){ /*Reply*/
-    printf("sr_handlearppacket: handling arp reply\n");
+    fprintf(stderr, "Incoming packet ARP reply\n");
     /*Forward queued packets waiting on this reply*/
     struct sr_arpreq *waiting_req = sr_arpcache_insert(&(sr->cache), arphdr->ar_sha, arphdr->ar_sip);
     if(waiting_req == NULL){
@@ -268,7 +271,7 @@ void sr_handlearppacket(struct sr_instance* sr,
       memcpy(new_ethhdr->ether_dhost, arphdr->ar_sha, ETHER_ADDR_LEN);
       memcpy(new_ethhdr->ether_shost, sr_get_interface(sr, packet_walker->iface)->addr, ETHER_ADDR_LEN);
 
-      printf("sr_handlearppacket: sending packet to ");
+      fprintf(stderr, "Received arp reply, forwarding original packet to\n");
       sr_ip_hdr_t *iphdr = (sr_ip_hdr_t *)(new_packet + sizeof(sr_ethernet_hdr_t));
       print_addr_ip_int(ntohl(iphdr->ip_dst));
       sr_send_packet(sr, new_packet, new_len, packet_walker->iface);
@@ -297,7 +300,7 @@ void sr_sendicmppacket(struct sr_instance* sr,
   type 11 code 0: time exceeded
   */
 
-  if(icmp_type == 0){ /*echo reply, contain a copy of the echo request’s body*/
+  if(icmp_type == 0){ /*echo reply, contains a copy of the echo request’s body*/
     /*Ethernet header*/
     sr_ethernet_hdr_t *ethhdr = (sr_ethernet_hdr_t *)(packet);
     uint8_t temp_ether_dhost[ETHER_ADDR_LEN];
@@ -308,7 +311,7 @@ void sr_sendicmppacket(struct sr_instance* sr,
     /*IP Header*/
     sr_ip_hdr_t *iphdr = (sr_ip_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
     uint32_t dst_ip = iphdr->ip_dst;
-    uint32_t src_ip = iphdr->ip_dst;
+    uint32_t src_ip = iphdr->ip_src;
     iphdr->ip_ttl = INIT_TTL;
     iphdr->ip_sum = 0;
     iphdr->ip_dst = src_ip;
@@ -319,14 +322,14 @@ void sr_sendicmppacket(struct sr_instance* sr,
     icmp08hdr->icmp_type = icmp_type;
     icmp08hdr->icmp_code = icmp_code;
     icmp08hdr->icmp_sum = 0;
-    icmp08hdr->icmp_sum = cksum(icmp08hdr, len - sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
+    icmp08hdr->icmp_sum = cksum(icmp08hdr, len - sizeof(sr_ethernet_hdr_t) - sizeof(sr_ip_hdr_t));
 
-    printf("sr_sendicmppacket (1): sending packet to ");
+    fprintf(stderr, "Sending ICMP echo reply to\n");
     print_addr_ip_int(ntohl(iphdr->ip_dst));
     sr_send_packet(sr, packet, len, interface);
   }
   else{ /*icmp error, contains the original IP header + 8 bytes*/
-    /*Create new packet since incoming isn't necessarily icmp packet*/
+    /*Create new packet*/
     unsigned int new_len = sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_t11_hdr_t);
     uint8_t *new_packet = (uint8_t *)malloc(new_len);
 
@@ -342,7 +345,7 @@ void sr_sendicmppacket(struct sr_instance* sr,
     sr_ip_hdr_t *old_iphdr = (sr_ip_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
     sr_ip_hdr_t *new_iphdr = (sr_ip_hdr_t *)(new_packet + sizeof(sr_ethernet_hdr_t));
     uint32_t dst_ip = old_iphdr->ip_dst;
-    uint32_t src_ip = old_iphdr->ip_dst;
+    uint32_t src_ip = old_iphdr->ip_src;
     memcpy(new_iphdr, old_iphdr, sizeof(sr_ip_hdr_t));
     new_iphdr->ip_len = htons(sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_t11_hdr_t));
     new_iphdr->ip_ttl = INIT_TTL;
@@ -364,7 +367,7 @@ void sr_sendicmppacket(struct sr_instance* sr,
     }
     new_icmp11hdr->icmp_sum = cksum(new_icmp11hdr, sizeof(sr_icmp_t11_hdr_t));
 
-    printf("sr_sendicmppacket (2): sending packet to ");
+    fprintf(stderr, "Sending ICMP error type %d code %d to\n", icmp_type, icmp_code);
     print_addr_ip_int(ntohl(new_iphdr->ip_dst));
     sr_send_packet(sr, new_packet, new_len, interface);
     free(new_packet);
@@ -377,7 +380,7 @@ void sr_sendarppacket(struct sr_instance* sr,
         unsigned int len,
         char* interface/* lent */,
         uint8_t arp_op,
-        uint32_t ip)
+        uint32_t target_ip)
 {
 
   /*Send request when forwarding a packet*/
@@ -390,13 +393,14 @@ void sr_sendarppacket(struct sr_instance* sr,
 
     /*Ethernet Header*/
     sr_ethernet_hdr_t *new_ethhdr = (sr_ethernet_hdr_t *)(new_packet);
-    unsigned char broadcast_addr = 0xFF;
-    memcpy(new_ethhdr->ether_dhost, &(broadcast_addr), ETHER_ADDR_LEN);
+    int i;
+    for(i = 0; i < ETHER_ADDR_LEN; i++){
+      new_ethhdr->ether_dhost[i] = 0xFF;
+    }
     memcpy(new_ethhdr->ether_shost, sr_get_interface(sr, interface)->addr, ETHER_ADDR_LEN);
     new_ethhdr->ether_type = htons(ethertype_arp);
     /*ARP Header*/
     sr_arp_hdr_t *new_arphdr = (sr_arp_hdr_t *)(new_packet + sizeof(sr_ethernet_hdr_t));
-    unsigned char null_addr = 0x00;
     new_arphdr->ar_hrd = htons(arp_hrd_ethernet);
     new_arphdr->ar_pro = htons(ethertype_ip);             
     new_arphdr->ar_hln = ETHER_ADDR_LEN;             
@@ -404,14 +408,17 @@ void sr_sendarppacket(struct sr_instance* sr,
     new_arphdr->ar_op = htons(arp_op_request);
     memcpy(new_arphdr->ar_sha, sr_get_interface(sr, interface)->addr, ETHER_ADDR_LEN);
     new_arphdr->ar_sip = sr_get_interface(sr, interface)->ip;
-    memcpy(new_arphdr->ar_tha, &(null_addr), ETHER_ADDR_LEN);
-    new_arphdr->ar_tip = ip;
-
-    printf("sr_sendarppacket (1): sending packet to ");
+    new_arphdr->ar_tip = target_ip;
+    for(i = 0; i < ETHER_ADDR_LEN; i++){
+      new_arphdr->ar_tha[i] = 0x00;
+    }
+    fprintf(stderr, "Sending ARP req to\n");
     print_addr_ip_int(ntohl(new_arphdr->ar_tip));
+
+    fprintf(stderr, "Full header:\n");
+    print_hdrs(new_packet, new_len);
     sr_send_packet(sr, new_packet, new_len, interface);
     free(new_packet);
-
   }
   else if(arp_op == 2){ /*Handle send arp reply*/
     /*Ethernet header*/
@@ -425,9 +432,9 @@ void sr_sendarppacket(struct sr_instance* sr,
     memcpy(arphdr->ar_sha, sr_get_interface(sr, interface)->addr, ETHER_ADDR_LEN);
     arphdr->ar_sip = sr_get_interface(sr, interface)->ip;
     memcpy(arphdr->ar_tha, ethhdr->ether_shost, ETHER_ADDR_LEN);
-    arphdr->ar_tip = ip;
+    arphdr->ar_tip = target_ip;
     
-    printf("sr_sendarppacket (2): sending packet to ");
+    fprintf(stderr, "Sending ARP reply to\n");
     print_addr_ip_int(ntohl(arphdr->ar_tip));
     sr_send_packet(sr, packet, len, interface);
   }
