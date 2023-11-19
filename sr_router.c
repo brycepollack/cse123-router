@@ -92,6 +92,13 @@ void sr_handlepacket(struct sr_instance* sr,
 
   /* fill in code here */
 
+  /* Ethernet */
+  int minlength = sizeof(sr_ethernet_hdr_t);
+  if (len < minlength) {
+    fprintf(stderr, "Failed to handle ETHERNET header, insufficient length\n");
+    return;
+  }
+
   /* Figure out if a packet is ip, arp, handle accordingly*/
   uint16_t ethtype = ethertype(packet);
 
