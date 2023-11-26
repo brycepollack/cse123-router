@@ -350,6 +350,7 @@ void sr_sendarppacket(struct sr_instance* sr,
     
     fprintf(stderr, "Sending ARP reply to\n");
     print_addr_ip_int(ntohl(arphdr->ar_tip));
+
     sr_send_packet(sr, packet, len, interface);
   }
   
@@ -375,19 +376,15 @@ void sr_sendicmppacket(struct sr_instance* sr,
   if(icmp_type == 0){ /*echo reply, contains a copy of the echo request’s body*/
     /*Ethernet header*/
     sr_ethernet_hdr_t *ethhdr = (sr_ethernet_hdr_t *)(packet);
-    uint8_t temp_ether_dhost[ETHER_ADDR_LEN];
-    memcpy(temp_ether_dhost, ethhdr->ether_dhost, ETHER_ADDR_LEN);
     memcpy(ethhdr->ether_dhost, ethhdr->ether_shost, ETHER_ADDR_LEN);
-    memcpy(ethhdr->ether_shost, temp_ether_dhost, ETHER_ADDR_LEN);
+    memcpy(ethhdr->ether_shost, sr_get_interface(sr, interface)->addr, ETHER_ADDR_LEN);
     ethhdr->ether_type = htons(ethertype_ip);
     /*IP Header*/
     sr_ip_hdr_t *iphdr = (sr_ip_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
-    uint32_t dst_ip = iphdr->ip_dst;
-    uint32_t src_ip = iphdr->ip_src;
     iphdr->ip_ttl = INIT_TTL;
     iphdr->ip_sum = 0;
-    iphdr->ip_dst = src_ip;
-    iphdr->ip_src = dst_ip;
+    iphdr->ip_dst = iphdr->ip_src;
+    iphdr->ip_src = sr_get_interface(sr, interface)->ip;
     iphdr->ip_sum = cksum(iphdr, sizeof(sr_ip_hdr_t));
     /*ICMP Header*/
     sr_icmp_t08_hdr_t *icmp08hdr = (sr_icmp_t08_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
@@ -398,6 +395,7 @@ void sr_sendicmppacket(struct sr_instance* sr,
 
     fprintf(stderr, "Sending ICMP echo reply to\n");
     print_addr_ip_int(ntohl(iphdr->ip_dst));
+
     sr_send_packet(sr, packet, len, interface);
   }
   else{ /*icmp error, contains the original IP header + 8 bytes*/
@@ -408,22 +406,18 @@ void sr_sendicmppacket(struct sr_instance* sr,
     /*Ethernet header*/
     sr_ethernet_hdr_t *old_ethhdr = (sr_ethernet_hdr_t *)(packet);
     sr_ethernet_hdr_t *new_ethhdr = (sr_ethernet_hdr_t *)(new_packet);
-    uint8_t temp_ether_dhost[ETHER_ADDR_LEN];
-    memcpy(temp_ether_dhost, old_ethhdr->ether_dhost, ETHER_ADDR_LEN);
     memcpy(new_ethhdr->ether_dhost, old_ethhdr->ether_shost, ETHER_ADDR_LEN);
-    memcpy(new_ethhdr->ether_shost, temp_ether_dhost, ETHER_ADDR_LEN);
+    memcpy(new_ethhdr->ether_shost, sr_get_interface(sr, interface)->addr, ETHER_ADDR_LEN);
     new_ethhdr->ether_type = htons(ethertype_ip);
     /*IP Header*/
     sr_ip_hdr_t *old_iphdr = (sr_ip_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
     sr_ip_hdr_t *new_iphdr = (sr_ip_hdr_t *)(new_packet + sizeof(sr_ethernet_hdr_t));
-    uint32_t dst_ip = old_iphdr->ip_dst;
-    uint32_t src_ip = old_iphdr->ip_src;
     memcpy(new_iphdr, old_iphdr, sizeof(sr_ip_hdr_t));
     new_iphdr->ip_len = htons(sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_t11_hdr_t));
     new_iphdr->ip_ttl = INIT_TTL;
     new_iphdr->ip_sum = 0;
-    new_iphdr->ip_dst = src_ip;
-    new_iphdr->ip_src = dst_ip;
+    new_iphdr->ip_dst = old_iphdr->ip_src;
+    new_iphdr->ip_src = sr_get_interface(sr, interface)->ip;
     new_iphdr->ip_sum = cksum(new_iphdr, sizeof(sr_ip_hdr_t));
     /*ICMP Header*/
     sr_icmp_t11_hdr_t *new_icmp11hdr = (sr_icmp_t11_hdr_t *)(new_packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
@@ -441,6 +435,7 @@ void sr_sendicmppacket(struct sr_instance* sr,
 
     fprintf(stderr, "Sending ICMP error type %d code %d to\n", icmp_type, icmp_code);
     print_addr_ip_int(ntohl(new_iphdr->ip_dst));
+    
     sr_send_packet(sr, new_packet, new_len, interface);
     free(new_packet);
   }
