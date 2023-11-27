@@ -381,10 +381,11 @@ void sr_sendicmppacket(struct sr_instance* sr,
     ethhdr->ether_type = htons(ethertype_ip);
     /*IP Header*/
     sr_ip_hdr_t *iphdr = (sr_ip_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
+    uint32_t old_ip_dst = iphdr->ip_dst;
     iphdr->ip_ttl = INIT_TTL;
     iphdr->ip_sum = 0;
     iphdr->ip_dst = iphdr->ip_src;
-    iphdr->ip_src = sr_get_interface(sr, interface)->ip;
+    iphdr->ip_src = old_ip_dst;
     iphdr->ip_sum = cksum(iphdr, sizeof(sr_ip_hdr_t));
     /*ICMP Header*/
     sr_icmp_t08_hdr_t *icmp08hdr = (sr_icmp_t08_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
