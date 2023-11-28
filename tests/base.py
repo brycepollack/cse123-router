@@ -91,7 +91,7 @@ class CSE123TestBase(unittest.TestCase):
             print("Cleaning up ... ")
             os.remove(self.LOCK_FILE)
 
-    def setUpEnvironment(self, rtable='rtable', build=True, debug=False, manual_sr=False):
+    def setUpEnvironment(self, build=True, debug=False, manual_sr=False):
 
         global IPBASE, IP_SETTING
 
@@ -106,13 +106,10 @@ class CSE123TestBase(unittest.TestCase):
             f.write("\n")
             f.close()
 
-
-        self.ROUTING_TABLE = os.path.join(self.SUBMISSION_DIR, "rtables", rtable)
-        shutil.copyfile(self.ROUTING_TABLE, os.path.join(self.SUBMISSION_DIR, "rtable"))
-
         self.pox = None
         self.mininet = None
-        self.router = None
+        self.routers = [None]*4
+        self.router_logs = [None]*4
 
         pox_path = os.path.join(self.VNET_BASE_PATH, 'pox', 'pox.py')
         os.environ["PYTHONPATH"] = os.path.join(self.VNET_BASE_PATH, 'pox_module')
@@ -122,15 +119,20 @@ class CSE123TestBase(unittest.TestCase):
             self.assertTrue(self.buildSRSolution())
 
         with cd(self.VNET_BASE_PATH):
-            self.pox_log = open(os.path.join(self.SUBMISSION_DIR, 'test_pox.log'), 'w')
-            self.pox = pexpect.spawn(
-                pox_path,
-                args=['--verbose', 'ofhandler', 'srhandler', "openflow.of_01", "--port=6653"],
-                logfile=self.pox_log,
-                encoding="utf-8"
-            )
-            self.pox.expect('DEBUG:openflow.of_01:Listening on 0.0.0.0:6653')
-            logging.info("POX started.")
+            try:
+                while True:
+                    self.pox_log = open(os.path.join(self.SUBMISSION_DIR, 'test_pox.log'), 'w')
+                    self.pox = pexpect.spawn(
+                        pox_path,
+                        ['--verbose', 'ofhandler', 'srhandler', "openflow.of_01", "--port=6653"],
+                        logfile=self.pox_log,
+                        encoding="utf-8"
+                    )
+                    self.pox.expect('DEBUG:openflow.of_01:Listening on 0.0.0.0:6653')
+                    logging.info("POX started.")
+                    break
+            except Exception as e:
+                print(f"Failed to start POX, retrying: {e}")
             stophttp()
             with warnings.catch_warnings(), nostdout():
                 warnings.simplefilter("ignore")
@@ -145,32 +147,46 @@ class CSE123TestBase(unittest.TestCase):
             s2intf = server2.defaultIntf()
             clintf = client.defaultIntf()
             logging.info('Lab:')
-            s1intf.setIP('%s/8' % IP_SETTING['server1'])
-            s2intf.setIP('%s/8' % IP_SETTING['server2'])
-            clintf.setIP('%s/8' % IP_SETTING['client'])
+            s1intf.setIP('%s/28' % IP_SETTING['server1'])
+            s2intf.setIP('%s/28' % IP_SETTING['server2'])
+            clintf.setIP('%s/24' % IP_SETTING['client'])
 
             with nostdout():
                 for host in server1, server2, client:
                     set_default_route(host)
             starthttp( server1 )
             starthttp( server2 )
-            self.pox.expect('.*srhandler:SRServerListener catch RouterInfo even.*')
+            for i in range(4):
+                self.pox.expect(r'srhandler:SRServerListener catch RouterInfo even for vhost=sw\d', timeout=3)
             logging.info("Mininet started.")
 
         with cd(self.SUBMISSION_DIR):
             if manual_sr:
-                input("Start router now and hit enter:")
+                input("Start the routers now and hit enter:")
             else:
-                self.router_log = open(os.path.join(self.SUBMISSION_DIR, 'test_sr.log'), 'w')
-                self.router = pexpect.spawn(
-                    router_path,
-                    ["-l", "test.pcap"],
-                    logfile=self.router_log,
-                    encoding="utf-8"
-                )
-                self.router.expect('<-- Ready to process packets -->', timeout=3)
-                logging.info("Router started.")
-
+                while True:
+                    try:
+                        for i in range(4):
+                            if self.routers[i]:
+                                continue
+                            self.router_logs[i] = open(os.path.join(self.SUBMISSION_DIR, f"test_sr_{i+1}.log"), 'w')
+                            router = pexpect.spawn(
+                                router_path,
+                                [
+                                    "-l", f"test{i+1}.pcap",
+                                    "-v", f"sw{i+1}",
+                                    "-r", f"rtables/rtable{i+1}"
+                                ],
+                                logfile=self.router_logs[i],
+                                encoding="utf-8"
+                            )
+                            router.expect('<-- Ready to process packets -->', timeout=3)
+                            self.pox.expect(f'DEBUG:srhandler:.*open-msg: 0, vhost:sw{i+1}', timeout=3)
+                            self.routers[i] = router
+                            logging.info("Router started.")
+                        break
+                    except Exception as e:
+                        print(f"Failed to start routers, retrying: {e}")
         self.pcap_stream_client = PacketTest(clintf.link.intf2.name, client, debug=debug)
         self.pcap_stream_server1 = PacketTest(s1intf.link.intf2.name, server1, debug=debug)
         self.pcap_stream_server2 = PacketTest(s2intf.link.intf2.name, server2, debug=debug)
@@ -179,27 +195,30 @@ class CSE123TestBase(unittest.TestCase):
         self.pcap_stream_server2.run()
 
         self.client = {
-            "ip": "10.0.1.100",
-            "gw": "10.0.1.1",
+            "ip": self.mininet.get("client").IP(),
+            "gw": IP_SETTING[self.mininet.get("client").defaultIntf().link.intf2.name],
             "m": self.mininet.get("client"),
             "mac": self.mininet.get("client").MAC(),
-            "gwmac": self.mininet.get("sw0").MAC(intf=self.mininet.get("client").defaultIntf().link.intf2.name),
+            "gwmac": self.mininet.get("sw2").MAC(intf=self.mininet.get("client").defaultIntf().link.intf2.name),
         }
         self.server1 = {
-            "ip": "192.168.2.2",
-            "gw": "192.168.2.1",
+            "ip": self.mininet.get("server1").IP(),
+            "gw": IP_SETTING[self.mininet.get("server1").defaultIntf().link.intf2.name],
             "m": self.mininet.get("server1"),
             "mac": self.mininet.get("server1").MAC(),
-            "gwmac": self.mininet.get("sw0").MAC(intf=self.mininet.get("server1").defaultIntf().link.intf2.name),
+            "gwmac": self.mininet.get("sw3").MAC(intf=self.mininet.get("server1").defaultIntf().link.intf2.name),
         }
         self.server2 = {
-            "ip": "172.64.3.10",
-            "gw": "172.64.3.1",
+            "ip": self.mininet.get("server2").IP(),
+            "gw": IP_SETTING[self.mininet.get("server2").defaultIntf().link.intf2.name],
             "m": self.mininet.get("server2"),
             "mac": self.mininet.get("server2").MAC(),
-            "gwmac": self.mininet.get("sw0").MAC(intf=self.mininet.get("server2").defaultIntf().link.intf2.name),
+            "gwmac": self.mininet.get("sw4").MAC(intf=self.mininet.get("server2").defaultIntf().link.intf2.name),
         }
-        self.gateways = list(map(lambda x: x["gw"], [self.client, self.server1, self.server2]))
+        self.gateways = []
+        for k, v in IP_SETTING.items():
+            if "sw" in k:
+                self.gateways.append(v)
 
     def tearDownEnvironment(self):
         stophttp()
@@ -208,12 +227,13 @@ class CSE123TestBase(unittest.TestCase):
         self.pcap_stream_server1.stop()
         self.pcap_stream_server2.stop()
 
-        if self.router:
-            if not self.router.terminate(force=True):
-                print("Could not stop router")
-            self.router.close()
-            self.router_log.flush()
-            self.router_log.close()
+        for i, (router, router_log) in enumerate(zip(self.routers, self.router_logs)):
+            if router and router_log:
+                if not router.terminate(force=True):
+                    print(f"Could not stop router {i}")
+                router.close()
+                router_log.flush()
+                router_log.close()
 
         if not self.pox.terminate(force=True):
             print("Could not stop pox")

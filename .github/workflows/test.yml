@@ -8,7 +8,7 @@ jobs:
     name: Run Tests
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/ucsd-cse123-fa23/pa2a-testing:latest
+      image: ghcr.io/ucsd-cse123-fa23/pa2b-testing:latest
       options: --privileged
       credentials:
         username: ${{github.repository_owner}}

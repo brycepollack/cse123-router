@@ -1,6 +1,6 @@
 {
     "name": "Linux CSE 123 devcontainer",
-    "image": "ghcr.io/ucsd-cse123-fa23/pa2a-container:latest",
+    "image": "ghcr.io/ucsd-cse123-fa23/pa2b-container:latest",
     "customizations": {
         "vscode": {
             "extensions": [

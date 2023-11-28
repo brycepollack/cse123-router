@@ -1,6 +1,6 @@
 {
     "name": "Windows CSE 123 devcontainer",
-    "image": "ghcr.io/ucsd-cse123-fa23/pa2a-container:windows",
+    "image": "ghcr.io/ucsd-cse123-fa23/pa2b-container:windows",
     "customizations": {
         "vscode": {
             "extensions": [
