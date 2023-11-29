@@ -230,22 +230,31 @@ void sr_handleippacket(struct sr_instance* sr,
     iphdr->ip_sum = 0;
     iphdr->ip_sum = cksum(iphdr, sizeof(sr_ip_hdr_t));
 
-    /*Find an entry in the routing table that exactly matches the destination IP address*/
-    struct sr_rt* rt_walker = sr->routing_table;
-    struct sr_rt* dst_rt_entry = NULL;
-    while(rt_walker) {
-      if(rt_walker->dest.s_addr == dst_ip){
-        dst_rt_entry = rt_walker;
-        break;
-      }
-      rt_walker = rt_walker->next;
-    }
+    /*Find out which entry in the routing table has the longest prefix match with the destination IP address*/
+    struct sr_rt* dst_rt_entry = sr_longestprefixmatch(sr, dst_ip);
 
     if(dst_rt_entry != NULL){
-      /*Send an ARP request for the next-hop IP*/
-      fprintf(stderr, "Incoming packet IP, sending arp req to next hop router\n");
-      struct sr_arpreq *arpreq = sr_arpcache_queuereq(&(sr->cache), dst_rt_entry->gw.s_addr, packet, len, dst_rt_entry->interface);
-      sr_handlearpreq(sr, &(sr->cache), arpreq);
+      /*Look up forwarding address in arp cache*/
+      struct sr_arpentry *arpentry = sr_arpcache_lookup(&(sr->cache), dst_rt_entry->gw.s_addr);
+      if(arpentry != NULL){
+        /*Forward to matching address*/
+        uint8_t *new_packet = packet;
+        unsigned int new_len = len;
+        sr_ethernet_hdr_t *new_ethhdr = (sr_ethernet_hdr_t *)(new_packet);
+        memcpy(new_ethhdr->ether_dhost, arpentry->mac, ETHER_ADDR_LEN); /*Bryce: Is ETHER_ADDR_LEN right?*/
+        memcpy(new_ethhdr->ether_shost, sr_get_interface(sr, dst_rt_entry->interface)->addr, ETHER_ADDR_LEN);
+        fprintf(stderr, "Incoming packet IP found in arp cache, forwarding original packet to\n");
+        sr_ip_hdr_t *iphdr = (sr_ip_hdr_t *)(new_packet + sizeof(sr_ethernet_hdr_t));
+        print_addr_ip_int(ntohl(iphdr->ip_dst));
+        sr_send_packet(sr, new_packet, new_len, sr_get_interface(sr, dst_rt_entry->interface)->name);
+        free(new_packet);
+      }
+      else{
+        /*Send an ARP request for the next-hop IP*/
+        fprintf(stderr, "Incoming packet IP, sending arp req to next hop router\n");
+        struct sr_arpreq *arpreq = sr_arpcache_queuereq(&(sr->cache), dst_rt_entry->gw.s_addr, packet, len, dst_rt_entry->interface);
+        sr_handlearpreq(sr, &(sr->cache), arpreq);
+      }
     }
     else{
       /*Send icmp type 3 code 0*/
@@ -258,7 +267,9 @@ void sr_handleippacket(struct sr_instance* sr,
     if(ip_protocol(packet + sizeof(sr_ethernet_hdr_t)) == ip_protocol_icmp) { /* ICMP */
       sr_handleicmppacket(sr, packet, len, interface);
     }
-
+    else if(ip_protocol(packet + sizeof(sr_ethernet_hdr_t)) == ip_protocol_udp || ip_protocol(packet + sizeof(sr_ethernet_hdr_t)) == ip_protocol_tcp){
+      sr_sendicmppacket(sr, packet, len, interface, 3, 3);
+    }
   }
 
 }
@@ -441,5 +452,38 @@ void sr_sendicmppacket(struct sr_instance* sr,
     free(new_packet);
   }
 
+}
+
+struct sr_rt *sr_longestprefixmatch(struct sr_instance* sr,
+        uint32_t dst_ip)
+{
+  struct sr_rt* rt_walker = sr->routing_table;
+  struct sr_rt* dst_rt_entry = NULL;
+  int longest_prefix = 0;
+  while(rt_walker) {
+    uint32_t rt_prefix = ntohl(rt_walker->dest.s_addr && rt_walker->mask.s_addr);
+    uint32_t dst_prefix = ntohl(dst_ip && rt_walker->mask.s_addr);
+    if(rt_prefix == dst_prefix){
+      /*Matching prefix, now check if it is the longest prefix*/
+      uint32_t mask = ntohl(rt_walker->mask.s_addr);
+      int curr_prefix = 0;
+      int i;
+      for (i = 31; i >= 0; i--) {
+        if (mask & (1u << i)) {
+          curr_prefix += 1;
+        } 
+        else {
+          break;
+        }
+      }
+      if(curr_prefix >= longest_prefix){
+        longest_prefix = curr_prefix;
+        dst_rt_entry = rt_walker;
+      }
+    }
+    rt_walker = rt_walker->next;
+  }
+
+  return dst_rt_entry;
 }
 
