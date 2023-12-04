@@ -15,7 +15,7 @@ sr_router.c: This is the file with the core implementation of the router. Incomi
 
     sr_handlepacket: Determines if the incoming packet is an IP packet or an ARP packet and then delegates to the respective handle functions.
 
-    sr_handleippacket: Determines if the incoming IP packet is destined towards this router's interfaces or not. If it is, then checks if it is an ICMP packet and delegates to sr_handleicmppacket if so. If it is not, then decrements TTL by 1 and broadcasts ARP request for the next-hop router. If TTL is 0 or no next-hop router can be found, sends an ICMP error.
+    sr_handleippacket: Determines if the incoming IP packet is destined towards this router's interfaces or not. If it is, then checks if it is an ICMP packet and delegates to sr_handleicmppacket if so. If it is not, then decrements TTL by 1 and performs a longest prefix match for the next-hop router. If TTL is 0 or no next-hop router can be found, sends an ICMP error. If TTL is not 0 and next-hop router is found, either look up the next hop router in the ARP cache or broadcast an ARP request.
 
     sr_handleicmppacket: Determines if the incoming ICMP packet is an echo request. If so, sends an ICMP echo reply. 
 
