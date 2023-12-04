@@ -41,7 +41,9 @@ void sr_handlearpreq(struct sr_instance *sr, struct sr_arpcache *cache, struct s
             */
            struct sr_packet *packet_walker = req->packets;
            while(packet_walker){
-            sr_sendicmppacket(sr, packet_walker->buf, packet_walker->len, packet_walker->iface, 3, 1);
+            /*Send icmp type 3 code 1*/
+            sr_ip_hdr_t *iphdr = (sr_ip_hdr_t *)(packet_walker->buf + sizeof(sr_ethernet_hdr_t));
+            sr_sendicmppacket(sr, packet_walker->buf, packet_walker->len, packet_walker->iface, 3, 1, sr_get_interface(sr, packet_walker->iface)->ip, iphdr->ip_src);
             packet_walker = packet_walker->next;
            }
            sr_arpreq_destroy(cache, req);

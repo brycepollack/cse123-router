@@ -68,9 +68,9 @@ int sr_read_from_server(struct sr_instance* );
 void sr_init(struct sr_instance* );
 void sr_handlepacket(struct sr_instance* , uint8_t * , unsigned int , char* );
 void sr_handleippacket(struct sr_instance* , uint8_t * , unsigned int , char* );
-void sr_handleicmppacket(struct sr_instance* , uint8_t * , unsigned int , char* );
+void sr_handleicmppacket(struct sr_instance* , uint8_t * , unsigned int , char* , struct sr_if*);
 void sr_handlearppacket(struct sr_instance* , uint8_t * , unsigned int , char* );
-void sr_sendicmppacket(struct sr_instance*, uint8_t *, unsigned int, char*, uint8_t, uint8_t);
+void sr_sendicmppacket(struct sr_instance*, uint8_t *, unsigned int, char*, uint8_t, uint8_t, uint32_t, uint32_t);
 void sr_sendarppacket(struct sr_instance*, uint8_t *, unsigned int, char*, uint8_t, uint32_t);
 
 /* -- sr_if.c -- */
