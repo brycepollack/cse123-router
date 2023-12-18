@@ -1,16 +1,3 @@
-# pa2a-starter
-
-## Info
-
-Name: Bryce Pollack
-
-PID: A16657276
-
-Email: bpollack@ucsd.edu
-
-## Description and Overview
-Describe in brief what files you changed and what they should do.
-
 sr_router.c: This is the file with the core implementation of the router. Incoming packets are fed into sr_handlepacket(), which processes packets according to their headers. If they are IP packets, then they will be acknowledged with an ICMP echo reply if they are destined for one of the router's interfaces or forwarded to the next-hop router if they are not. If it is an ARP request, an ARP reply will be sent back to the sender. If it is an ARP reply, all packets waiting on that ARP reply will be forwarded.
 
     sr_handlepacket: Determines if the incoming packet is an IP packet or an ARP packet and then delegates to the respective handle functions.
